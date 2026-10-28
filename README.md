@@ -66,6 +66,42 @@ returns `888` — it never moves the tokens. **The revert was in the harness, no
 now simulates the pull from the bridge's address before asserting, and the same trap is written into the
 operations log of the project this came from.
 
+
+## Redemption accounting (33 tests in total)
+
+`test/RedemptionAccounting.t.sol` (22 tests) deploys the **real `Bridge`** behind a `TransparentUpgradeableProxy`
+with the real `Bank`, a `SystemTestRelay` and a test-only wallet-registry mock, then drives
+`submitRedemptionProof` **through the real external entry point**, SPV included, with a structurally valid
+fabricated transaction. The report is in [`REDEMPTION_FINDINGS.md`](REDEMPTION_FINDINGS.md).
+
+What survives (asserted with exact numbers): the fee split is exactly `amount / divisor`; `txMaxFee` is
+snapshotted per request; `pendingRedemptionsValue` grows by `amount - treasuryFee`; output values are held to
+`[redeemable - txMaxFee, redeemable]` (both ±1 sat revert); the `(wallet, script)` key is unique per pending
+request and reusable after processing; "Insufficient wallet funds" is inclusive at the exact boundary; dust
+and standard-script gates reject what they claim; a timeout refunds the **full** requested amount; and
+`pending <= mainUtxo` survives sequential proofs under fuzz.
+
+Three defects were found and **none of them is payable** — all require a trusted role, none escalates
+privilege, and the user is refunded on timeout:
+
+1. `updateRedemptionParameters` accepts a `redemptionTxMaxFee` in `(dust - dust/divisor, dust)`, after which
+   `redeemableAmount - request.txMaxFee` **panics** in `processNonChangeRedemptionTxOutput`, so the proof can
+   never succeed for any output value. The code comment that claims the dust threshold prevents this is
+   wrong. Governance-only.
+2. The same panic via `redemptionTreasuryFeeDivisor = 1` — no lower bound exists anywhere, including
+   `BridgeGovernance`; it also bypasses the wallet-funds guard.
+3. A wallet-authored proof with no change output deletes `mainUtxoHash` while `pendingRedemptionsValue > 0`.
+
+That is the honest result: the accounting holds, and the three ways to break it are all reachable only by
+roles that are already trusted.
+
+## Also checked, and clean
+
+The three L2 gateways in the Threshold scope carry a backing invariant that holds on live chains with
+wei-level precision: Base 45.793774 tBTC, Optimism 6.94643228, Arbitrum 80.0359653 — in each case the
+gateway's wrapped-token balance equals `mintedAmount` exactly. Both L2 redeemer proxies hold 0 tBTC and their
+proxy admins are contracts.
+
 ## Reproduce
 
 ```bash
